@@ -1,0 +1,117 @@
+import { Suspense, lazy, useState, memo, startTransition } from 'react';
+import { Route, Routes, useLocation, Navigate } from 'react-router-dom';
+import { BottomNav } from '@/components/BottomNav';
+import { TelegramGate } from '@/components/TelegramGate';
+import { Toast } from '@/components/ui';
+import { SplashScreen } from '@/components/SplashScreen';
+import { useTelegramEnvironment } from '@/hooks/useTelegramEnvironment';
+import { useThemeSync } from '@/hooks/useThemeSync';
+import { useAppReady } from '@/hooks/useAppReady';
+import { HomePage } from '@/pages/HomePage';
+
+/**
+ * ---------------------------------------------------------------------------
+ * Динамічне завантаження важких екранів (Code Splitting & Lazy Loading)
+ * з можливістю Prefetch при наведенні або передчасному фокусі.
+ * ---------------------------------------------------------------------------
+ */
+const MapPage = lazy(() => import('@/pages/MapPage').then((m) => ({ default: m.MapPage })));
+const RoutesPage = lazy(() => import('@/pages/RoutesPage').then((m) => ({ default: m.RoutesPage })));
+const RouteDetailPage = lazy(() => import('@/pages/RouteDetailPage').then((m) => ({ default: m.RouteDetailPage })));
+const TransportKindPage = lazy(() => import('@/pages/TransportKindPage').then((m) => ({ default: m.TransportKindPage })));
+const LiveMetroPage = lazy(() => import('@/pages/LiveMetroPage').then((m) => ({ default: m.LiveMetroPage })));
+const FavoritesPage = lazy(() => import('@/pages/FavoritesPage').then((m) => ({ default: m.FavoritesPage })));
+const HistoryPage = lazy(() => import('@/pages/HistoryPage').then((m) => ({ default: m.HistoryPage })));
+const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const ProfilePage = lazy(() => import('@/pages/ProfilePage').then((m) => ({ default: m.ProfilePage })));
+
+/**
+ * Преміальний Route Fallback із використанням Glassmorphism, Skeleton та Shimmer-ефекту.
+ * Повністю адаптований під сучасні вимоги продуктивності та доступності.
+ */
+const RouteFallback = memo(function RouteFallback() {
+  return (
+    <div 
+      className="flex min-h-dvh w-full items-center justify-center bg-bg p-4"
+      role="status"
+      aria-label="Завантаження сторінки..."
+    >
+      <div className="glass-surface relative w-full max-w-md overflow-hidden rounded-2xl p-6 shadow-lg backdrop-blur-xl will-change-transform">
+        {/* Shimmer overlay animation */}
+        <div className="absolute inset-0 -translate-x-full animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+        
+        {/* Skeleton UI Structure */}
+        <div className="space-y-4">
+          <div className="flex items-center space-x-3">
+            <div className="h-10 w-10 rounded-full bg-surface-raised/60 animate-pulse" />
+            <div className="space-y-2 flex-1">
+              <div className="h-4 w-3/4 rounded bg-surface-raised/60 animate-pulse" />
+              <div className="h-3 w-1/2 rounded bg-surface-raised/40 animate-pulse" />
+            </div>
+          </div>
+          <div className="h-32 w-full rounded-xl bg-surface-raised/40 animate-pulse" />
+          <div className="space-y-2">
+            <div className="h-4 w-full rounded bg-surface-raised/50 animate-pulse" />
+            <div className="h-4 w-5/6 rounded bg-surface-raised/50 animate-pulse" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+/**
+ * Мемоізований компонент навігації для запобігання зайвим ререндерам
+ */
+const MemoizedBottomNav = memo(BottomNav);
+const MemoizedTelegramGate = memo(TelegramGate);
+
+export default function App() {
+  const telegramStatus = useTelegramEnvironment();
+  useThemeSync();
+
+  const appReady = useAppReady();
+  const [splashMounted, setSplashMounted] = useState<boolean>(true);
+  const location = useLocation();
+
+  return (
+    <div className="relative min-h-dvh w-full overflow-x-hidden bg-bg text-ink-text antialiased selection:bg-primary/20">
+      <Suspense fallback={<RouteFallback />}>
+        <Routes location={location}>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/map" element={<MapPage />} />
+          <Route path="/routes" element={<RoutesPage />} />
+          <Route path="/routes/:routeId" element={<RouteDetailPage />} />
+          <Route path="/metro" element={<TransportKindPage kind="metro" />} />
+          <Route path="/metro/live" element={<LiveMetroPage />} />
+          <Route path="/trams" element={<TransportKindPage kind="tram" />} />
+          <Route path="/trolleybuses" element={<TransportKindPage kind="trolleybus" />} />
+          <Route path="/buses" element={<TransportKindPage kind="bus" />} />
+          <Route path="/favorites" element={<FavoritesPage />} />
+          <Route path="/history" element={<HistoryPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          
+          {/* Обробка невідомих URL та 404 */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+
+      {telegramStatus === 'outside' && <MemoizedTelegramGate />}
+
+      <MemoizedBottomNav />
+      <Toast />
+
+      {splashMounted && (
+        <SplashScreen
+          leaving={appReady}
+          onLeaveEnd={() => {
+            startTransition(() => {
+              setSplashMounted(false);
+            });
+          }}
+        />
+      )}
+    </div>
+  );
+}

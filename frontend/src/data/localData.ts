@@ -1,0 +1,233 @@
+import { TransportKind } from '@/types/transport';
+import routesRealJson from './routesReal.json';
+import stopsRealJson from './stopsReal.json';
+
+/**
+ * Реальні дані маршрутів і зупинок Харкова, розшифровані з офіційних
+ * KML-схем (src/assets/marshryt transporty kharkiv/marshryt troleybus,
+ * marshryt tramway) та реальних розкладів руху
+ * (assets/rozklad ryhy trolley, assets/rozklad ryhy tramway).
+ *
+ * Жодних вигаданих/рівномірно розставлених зупинок — тільки точні
+ * координати та назви з першоджерела. Інтервал руху та перший/останній
+ * рейс обчислені з реальних розкладів по кожному маршруту.
+ */
+
+export interface RouteItem {
+  id: string;
+  kind: TransportKind;
+  number: string;
+  name: string;
+  color: string;
+  stopIds: string[];
+  headsignForward: string;
+  headsignBackward: string;
+  schedule: any[];
+  firstDeparture: string;
+  lastDeparture: string;
+  intervalMinutes: number;
+}
+
+export interface StopItem {
+  id: string;
+  name: string;
+  kinds: TransportKind[];
+  position: {
+    lat: number;
+    lng: number;
+  };
+  routeIds: string[];
+}
+
+interface RealRoute {
+  id: string;
+  kind: TransportKind;
+  number: string;
+  name: string;
+  color: string;
+  headsignForward: string;
+  headsignBackward: string;
+  firstDeparture: string;
+  lastDeparture: string;
+  intervalMinutes: number;
+  stopIdsForward: string[];
+  stopIdsBackward: string[];
+}
+
+const REAL_ROUTES = routesRealJson as unknown as RealRoute[];
+const REAL_STOPS = stopsRealJson as unknown as StopItem[];
+
+const stopsMap = new Map<string, StopItem>();
+REAL_STOPS.forEach((s) => stopsMap.set(s.id, s));
+
+// stopIds — зупинки в напрямку "туди" (headsignForward), як основний
+// список для карти, сторінки маршруту та підрахунку кількості зупинок.
+const routesData: RouteItem[] = REAL_ROUTES.map((r) => ({
+  id: r.id,
+  kind: r.kind,
+  number: r.number,
+  name: r.name,
+  color: r.color,
+  stopIds: r.stopIdsForward.length > 0 ? r.stopIdsForward : r.stopIdsBackward,
+  headsignForward: r.headsignForward,
+  headsignBackward: r.headsignBackward,
+  schedule: [],
+  firstDeparture: r.firstDeparture,
+  lastDeparture: r.lastDeparture,
+  intervalMinutes: r.intervalMinutes
+}));
+
+const stopsData: StopItem[] = Array.from(stopsMap.values());
+
+export interface TripOption {
+  route: RouteItem;
+  boardStop: StopItem;
+  alightStop: StopItem;
+  boardDistanceM: number;
+  alightDistanceM: number;
+}
+
+function distanceMetersLatLng(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371000;
+  const dLat = ((bLat - aLat) * Math.PI) / 180;
+  const dLng = ((bLng - aLng) * Math.PI) / 180;
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((aLat * Math.PI) / 180) * Math.cos((bLat * Math.PI) / 180) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+/**
+ * Підбирає маршрути громадського транспорту, які проходять і біля точки
+ * відправлення, і біля точки призначення — простий "будівник маршруту"
+ * без бекенду (жодних live-даних, тільки статична геометрія routesReal.json).
+ *
+ * Для кожного маршруту шукає найближчу до `from` та найближчу до `to`
+ * зупинку з-поміж його власних зупинок; якщо обидві в межах допустимого
+ * радіусу (і це різні зупинки) — маршрут вважається придатним варіантом.
+ * Радіус пошуку поступово розширюється, якщо нічого не знайдено поруч.
+ */
+export function buildTripOptions(
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+  maxOptions = 5
+): TripOption[] {
+  const RADII_M = [700, 1200, 2200, 4000];
+
+  for (const radius of RADII_M) {
+    const candidates: TripOption[] = [];
+
+    for (const route of routesData) {
+      let nearestToStart: { stop: StopItem; dist: number } | null = null;
+      let nearestToEnd: { stop: StopItem; dist: number } | null = null;
+
+      for (const stopId of route.stopIds) {
+        const stop = stopsMap.get(stopId);
+        if (!stop) continue;
+
+        const dStart = distanceMetersLatLng(fromLat, fromLng, stop.position.lat, stop.position.lng);
+        if (!nearestToStart || dStart < nearestToStart.dist) nearestToStart = { stop, dist: dStart };
+
+        const dEnd = distanceMetersLatLng(toLat, toLng, stop.position.lat, stop.position.lng);
+        if (!nearestToEnd || dEnd < nearestToEnd.dist) nearestToEnd = { stop, dist: dEnd };
+      }
+
+      if (!nearestToStart || !nearestToEnd) continue;
+      if (nearestToStart.stop.id === nearestToEnd.stop.id) continue;
+      if (nearestToStart.dist > radius || nearestToEnd.dist > radius) continue;
+
+      candidates.push({
+        route,
+        boardStop: nearestToStart.stop,
+        alightStop: nearestToEnd.stop,
+        boardDistanceM: nearestToStart.dist,
+        alightDistanceM: nearestToEnd.dist
+      });
+    }
+
+    if (candidates.length > 0) {
+      return candidates
+        .sort((a, b) => a.boardDistanceM + a.alightDistanceM - (b.boardDistanceM + b.alightDistanceM))
+        .slice(0, maxOptions);
+    }
+  }
+
+  return [];
+}
+
+
+export const localRoutes = {
+  all: (): RouteItem[] => routesData,
+  getById: (id: string): RouteItem | undefined => routesData.find((r) => r.id === id),
+  getByKind: (kind: TransportKind): RouteItem[] => routesData.filter((r) => r.kind === kind),
+  search: (query: string): RouteItem[] => {
+    const q = query.toLowerCase();
+    return routesData.filter(
+      (r) => r.number.toLowerCase().includes(q) || r.name.toLowerCase().includes(q)
+    );
+  },
+  buildTrip: (fromLat: number, fromLng: number, toLat: number, toLng: number): TripOption[] =>
+    buildTripOptions(fromLat, fromLng, toLat, toLng)
+};
+
+export const localStops = {
+  all: (): StopItem[] => stopsData,
+  getById: (id: string): StopItem | undefined => stopsData.find((s) => s.id === id),
+  search: (query: string): StopItem[] => {
+    const q = query.toLowerCase();
+    return stopsData.filter((s) => s.name.toLowerCase().includes(q));
+  },
+  getNearby: (lat: number, lng: number, maxDistance = 1000): StopItem[] => {
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const distanceMeters = (aLat: number, aLng: number, bLat: number, bLng: number) => {
+      const R = 6371000;
+      const dLat = toRad(bLat - aLat);
+      const dLng = toRad(bLng - aLng);
+      const la1 = toRad(aLat);
+      const la2 = toRad(bLat);
+      const x = dLng * Math.cos((la1 + la2) / 2);
+      const y = dLat;
+      return Math.sqrt(x * x + y * y) * R;
+    };
+    return stopsData
+      .filter((s) => distanceMeters(lat, lng, s.position.lat, s.position.lng) <= maxDistance)
+      .sort(
+        (a, b) =>
+          distanceMeters(lat, lng, a.position.lat, a.position.lng) -
+          distanceMeters(lat, lng, b.position.lat, b.position.lng)
+      );
+  },
+  // Симулює найближчі прибуття для кожного маршруту, що проходить через зупинку,
+  // на основі реального інтервалу руху (intervalMinutes) та поточного часу доби.
+  getArrivals: (stopId: string): { routeId: string; etaMinutes: number }[] => {
+    const stop = stopsData.find((s) => s.id === stopId);
+    if (!stop) return [];
+
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+    return stop.routeIds
+      .map((routeId) => {
+        const route = routesData.find((r) => r.id === routeId);
+        if (!route) return null;
+
+        const [fromH, fromM] = route.firstDeparture.split(':').map(Number);
+        const [toH, toM] = route.lastDeparture.split(':').map(Number);
+        const startMinutes = fromH * 60 + fromM;
+        const endMinutes = toH * 60 + toM;
+        if (nowMinutes < startMinutes || nowMinutes > endMinutes) return null;
+
+        const interval = Math.max(route.intervalMinutes || 10, 3);
+        // Детермінований, але відмінний для кожного маршруту зсув фази,
+        // щоб борти на одній зупинці не прибували всі одночасно.
+        const phaseSeed = routeId.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+        const minutesIntoInterval = (nowMinutes + phaseSeed) % interval;
+        const etaMinutes = interval - minutesIntoInterval;
+
+        return { routeId, etaMinutes: etaMinutes === interval ? 0 : etaMinutes };
+      })
+      .filter((a): a is { routeId: string; etaMinutes: number } => a !== null);
+  }
+};
