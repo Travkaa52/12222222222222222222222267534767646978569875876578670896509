@@ -1,6 +1,5 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: ['selector', '[data-theme="dark"]'],
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
@@ -22,14 +21,43 @@ export default {
         surface: {
           DEFAULT: 'rgb(var(--color-surface) / <alpha-value>)',
           soft: 'rgb(var(--color-surface-soft) / <alpha-value>)',
-          raised: 'rgb(var(--color-surface-raised) / <alpha-value>)'
+          raised: 'rgb(var(--color-surface-raised) / <alpha-value>)',
+          muted: 'rgb(var(--color-surface-soft) / <alpha-value>)'
         },
         border: 'rgb(var(--color-border))',
         ink: {
           text: 'rgb(var(--color-text) / <alpha-value>)',
           muted: 'rgb(var(--color-text-muted))',
-          inverted: 'rgb(var(--color-text-inverted) / <alpha-value>)'
-        }
+          inverted: 'rgb(var(--color-text-inverted) / <alpha-value>)',
+          border: 'rgb(var(--color-ink-border))',
+          surface: 'rgb(var(--color-ink-surface) / <alpha-value>)'
+        },
+        /**
+         * Ці кольори раніше використовувались у ~30 файлах (primary,
+         * primary-foreground, surface-muted, muted, destructive, neon,
+         * accent), але жодного з них не було в палітрі Tailwind — тому
+         * відповідні класи не генерувались і елементи ставали прозорими /
+         * нестильними, по-різному в кожній темі. Додано тут і прив'язано
+         * до тих самих CSS-змінних з tokens.css, щоб усі сторінки й
+         * модалки виглядали однаково в межах однієї теми.
+         */
+        primary: {
+          DEFAULT: 'rgb(var(--color-primary) / <alpha-value>)',
+          foreground: 'rgb(var(--color-text-inverted) / <alpha-value>)'
+        },
+        accent: {
+          DEFAULT: 'rgb(var(--color-gold) / <alpha-value>)',
+          foreground: 'rgb(var(--color-text-inverted) / <alpha-value>)'
+        },
+        muted: {
+          DEFAULT: 'rgb(var(--color-surface-soft) / <alpha-value>)',
+          foreground: 'rgb(var(--color-text-muted) / var(--color-text-muted-alpha))'
+        },
+        destructive: {
+          DEFAULT: 'rgb(var(--color-destructive) / <alpha-value>)',
+          foreground: 'rgb(var(--color-text-inverted) / <alpha-value>)'
+        },
+        neon: 'rgb(var(--color-neon) / <alpha-value>)'
       },
       fontFamily: {
         display: ['"Manrope"', 'system-ui', 'sans-serif'],
@@ -75,6 +103,10 @@ export default {
           '0%': { transform: 'translateX(-100%) scaleX(0.4)' },
           '50%': { transform: 'translateX(20%) scaleX(0.7)' },
           '100%': { transform: 'translateX(120%) scaleX(0.4)' }
+        },
+        'page-in': {
+          from: { opacity: '0', transform: 'translate3d(0, 10px, 0) scale(0.99)' },
+          to: { opacity: '1', transform: 'translate3d(0, 0, 0) scale(1)' }
         }
       },
       animation: {
@@ -90,7 +122,8 @@ export default {
         'splash-ring-3': 'splash-ring 2.4s cubic-bezier(0.4,0,0.2,1) infinite 1.6s',
         'splash-word-in': 'splash-word-in 0.5s cubic-bezier(0.16,1,0.3,1) 0.25s both',
         'splash-out': 'splash-out 0.45s cubic-bezier(0.4,0,1,1) both',
-        'progress-indeterminate': 'progress-indeterminate 1.2s cubic-bezier(0.4,0,0.2,1) infinite'
+        'progress-indeterminate': 'progress-indeterminate 1.2s cubic-bezier(0.4,0,0.2,1) infinite',
+        'page-in': 'page-in 0.22s cubic-bezier(0.22,1,0.36,1) both'
       }
     }
   },
