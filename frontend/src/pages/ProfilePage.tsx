@@ -29,6 +29,7 @@ import {
   SupportModal,
   SupportProjectModal
 } from '@/components/ProfileModals';
+import { HomeScreenShortcutCard } from '@/components/HomeScreenShortcutCard';
 
 export function ProfilePage() {
   const profile = useAuthStore((s) => s.profile);
@@ -99,6 +100,10 @@ export function ProfilePage() {
                     alt={profile.displayName}
                     className="h-18 w-18 rounded-full object-cover ring-4 ring-primary/20 shadow-md"
                   />
+                ) : profile.avatarEmoji ? (
+                  <div className="flex h-18 w-18 items-center justify-center rounded-full bg-primary/10 text-3xl ring-4 ring-primary/20 shadow-md">
+                    {profile.avatarEmoji}
+                  </div>
                 ) : (
                   <div className="flex h-18 w-18 items-center justify-center rounded-full bg-primary/10 text-primary ring-4 ring-primary/20 shadow-md">
                     <User className="h-9 w-9" />
@@ -107,7 +112,7 @@ export function ProfilePage() {
                 
                 <div 
                   className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white ring-2 ring-surface shadow-xs"
-                  title="Авторизовано через Telegram"
+                  title={profile.isLocal ? 'Локальний профіль на цьому пристрої' : 'Авторизовано через Telegram'}
                 >
                   <ShieldCheck className="h-3.5 w-3.5" />
                 </div>
@@ -115,7 +120,7 @@ export function ProfilePage() {
 
               <div className="flex-1 min-w-0">
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-primary/10 text-primary border border-primary/20 mb-1">
-                  Користувач Kharkiv GO
+                  {profile.isLocal ? 'Локальний профіль' : 'Користувач Kharkiv GO'}
                 </span>
                 <h2 className="text-lg font-extrabold text-ink-text truncate leading-tight">
                   {profile.displayName}
@@ -123,6 +128,11 @@ export function ProfilePage() {
                 {profile.username && (
                   <p className="text-xs font-medium text-ink-muted truncate">
                     @{profile.username}
+                  </p>
+                )}
+                {profile.isLocal && profile.contact && (
+                  <p className="text-xs font-medium text-ink-muted truncate">
+                    {profile.contact}
                   </p>
                 )}
               </div>
@@ -194,8 +204,8 @@ export function ProfilePage() {
               className="flex items-center justify-between p-4 transition-colors hover:bg-surface/90 active:bg-muted/50 min-h-[48px]"
             >
               <div className="flex items-center gap-3.5">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                  <Star className="h-5 w-5 fill-amber-500/20" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-surface-soft text-ink-text border border-border/40">
+                  <Star className="h-5 w-5 fill-ink-muted/20" />
                 </div>
                 <div>
                   <h4 className="text-xs font-bold text-ink-text">Обране</h4>
@@ -203,7 +213,7 @@ export function ProfilePage() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="rounded-full bg-amber-500/10 px-2.5 py-0.5 text-xs font-extrabold text-amber-600">
+                <span className="rounded-full bg-surface-soft px-2.5 py-0.5 text-xs font-extrabold text-ink-text">
                   {favoritesCount}
                 </span>
                 <ChevronRight className="h-4 w-4 text-ink-muted" />
@@ -281,6 +291,8 @@ export function ProfilePage() {
               <ChevronRight className="h-4 w-4 text-ink-muted" />
             </Link>
           </div>
+
+          <HomeScreenShortcutCard />
         </div>
 
         <div className="space-y-3">
@@ -353,7 +365,7 @@ export function ProfilePage() {
               className="w-full flex items-center justify-between p-4 transition-colors hover:bg-surface/90 active:bg-muted/50 min-h-[48px] text-left"
             >
               <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-500 border border-blue-500/20">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-surface-soft text-ink-text border border-border/40">
                   <LifeBuoy className="h-4 w-4" />
                 </div>
                 <div>

@@ -5,7 +5,6 @@ import {
   ChevronRight, 
   Map as MapIcon, 
   Navigation, 
-  Bell, 
   Settings, 
   Plus, 
   ArrowUpRight, 
@@ -18,11 +17,14 @@ import {
   Compass,
   CheckCircle2,
   ExternalLink,
-  AlertTriangle
+  AlertTriangle,
+  TrainTrack,
+  AlarmClock
 } from 'lucide-react';
 import { ReportDelayModal } from '@/components/ReportDelayModal';
 import { RouteDetailModal } from '@/components/RouteDetailModal';
 import { TrainWishSprite } from '@/components/TrainWishSprite';
+import { NotificationsBell, NotificationsSection } from '@/components/NotificationsSection';
 import { localRoutes, localStops } from '@/data/localData';
 import { useFavoritesStore } from '@/store/useFavoritesStore';
 import { useHistoryStore } from '@/store/useHistoryStore';
@@ -36,9 +38,18 @@ import {
   getUpcomingArrivalsForStation,
   formatEtaCountdown
 } from '@/liveMetro/liveMetroEngine';
+import { METRO_STATION_GEO } from '@/liveMetro/metroStationsGeo';
 import type { TransportKind, TransportRoute } from '@/types/transport';
 
-const metroIcon = assetUrl('/icons/metroicono.png');
+// metroicono.png ще не покладений у public/icons (див. README.txt там же) —
+// доки його не додадуть, для ВСІХ згадок метро на головній сторінці
+// використовуємо вже наявний, гарантовано робочий kharkiv-metro-logo.png.
+const metroIconPrimary = assetUrl('/icons/metroicono.png');
+const metroIconFallback = assetUrl('/icons/kharkiv-metro-logo.png');
+const metroIcon = metroIconFallback;
+const routesIcon = assetUrl('/icons/marshryticono.png');
+const mapIcon = assetUrl('/icons/kartaicono.png');
+const favoritesIcon = assetUrl('/icons/obraneicono.png');
 
 const KIND_ICON: Record<TransportKind, string> = {
   metro: '🚇',
@@ -118,18 +129,13 @@ export function HomePage() {
 
     for (const { line } of BUILT_LINES) {
       for (const s of line.stations) {
-        const stop = localStops.getById(s.id);
-        if (!stop) continue;
+        const geo = METRO_STATION_GEO[s.id];
+        if (!geo) continue;
 
-        const distM = calculateDistanceMeters(
-          position.lat,
-          position.lng,
-          stop.position.lat,
-          stop.position.lng
-        );
+        const distM = calculateDistanceMeters(position.lat, position.lng, geo.lat, geo.lng);
 
         if (!best || distM < best.distM) {
-          best = { id: s.id, name: stop.name, distM, lineColor: line.color };
+          best = { id: s.id, name: s.name, distM, lineColor: line.color };
         }
       }
     }
@@ -143,8 +149,8 @@ export function HomePage() {
 
   const metroTrackArrivals = useMemo(() => {
     if (nearestMetroArrivals.length === 0) return { track1: null, track2: null };
-    const track1 = nearestMetroArrivals.find((a) => String(a.direction) === '0') ?? nearestMetroArrivals[0] ?? null;
-    const track2 = nearestMetroArrivals.find((a) => String(a.direction) === '1' && a !== track1) ?? null;
+    const track1 = nearestMetroArrivals.find((a) => a.direction === 'forward') ?? nearestMetroArrivals[0] ?? null;
+    const track2 = nearestMetroArrivals.find((a) => a.direction === 'backward' && a !== track1) ?? null;
     return { track1, track2 };
   }, [nearestMetroArrivals]);
 
@@ -240,15 +246,7 @@ export function HomePage() {
               <span className="text-[10px] font-medium text-ink-muted capitalize">{formattedDate}</span>
             </div>
             
-            <button
-              type="button"
-              onClick={() => showToast('Нових сповіщень немає')}
-              aria-label="Сповіщення"
-              className="relative p-2.5 rounded-2xl bg-surface-raised border border-border/40 hover:bg-surface-soft transition-all active:scale-95 text-ink-text shadow-xs"
-            >
-              <Bell size={18} />
-              <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-            </button>
+            <NotificationsBell />
 
             <Link 
               to="/profile"
@@ -262,6 +260,7 @@ export function HomePage() {
 
         {/* 2. ADVANCED REAL-TIME SEARCH BAR */}
         <div className="relative z-30">
+          <TrainWishSprite />
           <div className={`relative flex items-center bg-surface-raised rounded-[22px] border transition-all duration-200 shadow-sm ${
             isSearchFocused ? 'border-primary/40 ring-4 ring-primary/10 shadow-md' : 'border-border/40 hover:border-border/60'
           }`}>
@@ -373,7 +372,7 @@ export function HomePage() {
                               className="flex items-center justify-between p-2 rounded-xl hover:bg-primary/10 transition-colors group"
                             >
                               <div className="flex items-center gap-2.5">
-                                <img src={metroIcon} alt="Метро" className="w-6 h-6 rounded-lg object-contain bg-amber-100 p-0.5" />
+                                <img src={metroIcon} alt="Метро" className="w-6 h-6 rounded-lg object-contain bg-gold/15 p-0.5" />
                                 <div>
                                   <span className="font-bold text-xs text-ink-text group-hover:text-primary block">{m.name}</span>
                                   {m.lineName && <span className="text-[10px] text-ink-muted">{m.lineName}</span>}
@@ -392,29 +391,50 @@ export function HomePage() {
           )}
         </div>
 
-        {/* 2.5. TRAIN WISH SPRITE — проїжджає раз на 2–3 години після заходу, тягне банер з побажанням */}
-        <TrainWishSprite />
-
         {/* 3. QUICK ACTIONS GRID (2x2) — кнопки зменшені (менше padding/gap), іконки того самого розміру */}
         <section className="grid grid-cols-2 gap-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
           {[
-            { label: 'Маршрути', icon: Navigation, to: '/routes', color: 'bg-blue-50 text-blue-600 border-blue-100', isImage: false },
-            { label: 'Карта', icon: MapIcon, to: '/map', color: 'bg-primary/10 text-primary border-primary/15', isImage: false },
-            { label: 'Метро', icon: null, to: '/metro/live', color: 'bg-amber-50 text-amber-600 border-amber-100', isImage: true },
-            { label: 'Обране', icon: Star, to: '/favorites', color: 'bg-purple-50 text-purple-600 border-purple-100', isImage: false },
+            { label: 'Маршрути', icon: Navigation, image: routesIcon, imageFallback: undefined as string | undefined, to: '/routes', color: 'bg-surface-soft text-ink-text border-border/40', imageScale: 'scale-125', overflowVisible: false },
+            { label: 'Карта', icon: MapIcon, image: mapIcon, imageFallback: undefined as string | undefined, to: '/map', color: 'bg-surface-soft text-ink-text border-border/40', imageScale: 'scale-125', overflowVisible: false },
+            { label: 'Метро', icon: TrainTrack, image: metroIconPrimary, imageFallback: metroIconFallback as string | undefined, to: '/metro/live', color: 'bg-surface-soft text-ink-text border-border/40', imageScale: 'scale-150', overflowVisible: true },
+            { label: 'Обране', icon: Star, image: favoritesIcon, imageFallback: undefined as string | undefined, to: '/favorites', color: 'bg-surface-soft text-ink-text border-border/40', imageScale: 'scale-125', overflowVisible: false },
           ].map((item, index) => {
             const Icon = item.icon;
+            const fallback = item.imageFallback;
             return (
               <Link
                 key={index}
                 to={item.to}
                 className="bg-surface-raised rounded-2xl p-2.5 flex items-center gap-2.5 border border-border/40 shadow-sm hover:shadow-md hover:border-border/60 active:scale-[0.98] transition-all duration-200 group"
               >
-                <div className={`w-16 h-16 shrink-0 rounded-2xl ${item.color} border flex items-center justify-center transition-transform group-hover:scale-110 shadow-2xs`}>
-                  {item.isImage ? (
-                    <img src={metroIcon} alt="Метро" className="w-12 h-12 object-contain" />
-                  ) : (
-                    Icon && <Icon size={30} />
+                <div className={`w-16 h-16 shrink-0 rounded-2xl ${item.color} border flex items-center justify-center transition-transform group-hover:scale-110 shadow-2xs ${item.overflowVisible ? 'overflow-visible' : 'overflow-hidden'}`}>
+                  {item.image ? (
+                    <img
+                      src={item.image}
+                      alt={item.label}
+                      className={`w-[4.5rem] h-[4.5rem] object-contain ${item.imageScale} ${item.overflowVisible ? 'relative z-10' : ''}`}
+                      onError={(e) => {
+                        const img = e.currentTarget as HTMLImageElement & { dataset: { triedFallback?: string } };
+                        // Спочатку, якщо є запасний PNG (напр. лого метро замість
+                        // ще не завантаженого metroicono.png) — пробуємо його.
+                        if (fallback && img.dataset.triedFallback !== '1') {
+                          img.dataset.triedFallback = '1';
+                          img.src = fallback;
+                          return;
+                        }
+                        // Якщо і запасний PNG не завантажився — ховаємо картинку
+                        // і показуємо lucide-іконку замість неї.
+                        img.style.display = 'none';
+                        const iconFallback = img.nextElementSibling as HTMLElement | null;
+                        if (iconFallback) iconFallback.style.display = 'flex';
+                      }}
+                    />
+                  ) : null}
+                  {Icon && (
+                    <Icon
+                      size={30}
+                      style={item.image ? { display: 'none' } : undefined}
+                    />
                   )}
                 </div>
                 <span className="font-extrabold text-ink-text text-xs tracking-tight">{item.label}</span>
@@ -423,9 +443,24 @@ export function HomePage() {
           })}
         </section>
 
+        {/* 3.5. SMART DEPARTURE REMINDER ENTRY POINT */}
+        <Link
+          to="/reminders"
+          className="flex items-center gap-3 rounded-2xl border border-border/40 bg-surface-raised p-3.5 shadow-sm active:scale-[0.98] transition-all duration-200 animate-in fade-in slide-in-from-bottom-2 duration-300"
+        >
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <AlarmClock size={22} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-black text-ink-text">Час виходити</p>
+            <p className="truncate text-[11px] text-ink-muted">Розумне нагадування про вихід із дому</p>
+          </div>
+          <ChevronRight size={16} className="shrink-0 text-ink-muted" />
+        </Link>
+
         {/* 4. LIVE METRO CARD */}
-        <section className="relative overflow-hidden rounded-[22px] bg-gradient-to-br from-primary via-forest-dark to-forest-dark text-white p-5 shadow-xl shadow-primary/10 transition-transform duration-300">
-          <div className="absolute -right-6 -bottom-6 w-36 h-36 bg-white/10 rounded-full blur-2xl pointer-events-none" />
+        <section className="relative overflow-hidden rounded-[22px] bg-gradient-to-br from-emerald-600 to-emerald-800 text-white p-5 shadow-lg shadow-emerald-900/10 transition-transform duration-300 animate-in fade-in slide-in-from-bottom-2 duration-300">
+          <div className="absolute -right-6 -bottom-6 w-32 h-32 bg-white/10 rounded-full blur-2xl pointer-events-none" />
 
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2 bg-white/15 px-3 py-1 rounded-full backdrop-blur-md border border-white/10">
@@ -458,7 +493,10 @@ export function HomePage() {
             </div>
           ) : nearestMetroStation ? (
             <div className="bg-white/10 backdrop-blur-sm rounded-[18px] p-3.5 border border-white/10 mb-4 space-y-2">
-              <div className="flex items-center justify-between">
+              <Link
+                to={`/metro/live?station=${nearestMetroStation.id}&tab=timetable`}
+                className="flex items-center justify-between hover:opacity-80 transition-opacity"
+              >
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span
                     className="h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white/25"
@@ -469,7 +507,7 @@ export function HomePage() {
                 <span className="shrink-0 text-[10px] font-semibold bg-white/15 px-2 py-0.5 rounded-full text-emerald-100">
                   {formatDistance(nearestMetroStation.distM)}
                 </span>
-              </div>
+              </Link>
 
               <MetroTrackRow label="Колія 1" arrival={metroTrackArrivals.track1} nowSec={metroNowSec} />
               <MetroTrackRow label="Колія 2" arrival={metroTrackArrivals.track2} nowSec={metroNowSec} />
@@ -481,14 +519,16 @@ export function HomePage() {
           )}
 
           <Link
-            to="/metro/live"
+            to={nearestMetroStation ? `/metro/live?station=${nearestMetroStation.id}&tab=timetable` : '/metro/live'}
             className="w-full py-3.5 px-4 bg-surface-raised text-primary rounded-[18px] font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg hover:bg-primary/10 active:scale-[0.98] transition-all duration-200"
           >
             <img src={metroIcon} alt="Метро" className="w-4 h-4 object-contain" />
-            <span>Відкрити карту метро</span>
+            <span>{nearestMetroStation ? 'Розклад найближчої станції' : 'Відкрити карту метро'}</span>
             <ArrowUpRight size={16} className="text-primary" />
           </Link>
         </section>
+
+        <NotificationsSection />
 
         {/* 5. NEAREST STOPS WITH GEO PERMISSION/STATE */}
         <section className="bg-surface-raised rounded-[22px] p-4 border border-border/40 shadow-sm">
@@ -497,7 +537,7 @@ export function HomePage() {
               <div className="p-1.5 bg-primary/10 text-primary rounded-xl">
                 <Navigation size={16} />
               </div>
-              <h2 className="font-extrabold text-ink-text text-xs">Ближайшие остановки</h2>
+              <h2 className="font-extrabold text-ink-text text-xs">Найближчі зупинки</h2>
             </div>
             <Link 
               to="/map"
@@ -517,7 +557,7 @@ export function HomePage() {
               <p className="text-[11px] text-ink-muted mb-3 max-w-[240px]">Увімкніть доступ до GPS, щоб бачити зупинки поруч з вами</p>
               <button
                 onClick={() => locate()}
-                className="px-4 py-2.5 bg-primary text-white rounded-xl text-xs font-bold shadow-sm hover:bg-primary active:scale-95 transition-all inline-flex items-center gap-1.5"
+                className="px-4 py-2.5 bg-primary text-white rounded-xl text-xs font-bold shadow-sm hover:brightness-105 active:scale-95 transition-all inline-flex items-center gap-1.5"
               >
                 <MapPin size={14} />
                 <span>Увімкнути геолокацію</span>
@@ -558,13 +598,13 @@ export function HomePage() {
         <section className="bg-surface-raised rounded-[22px] p-4 border border-border/40 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <div className="p-1.5 bg-amber-50 text-amber-600 rounded-xl">
-                <Star size={16} className="fill-amber-400 text-amber-400" />
+              <div className="p-1.5 bg-gold/10 text-gold rounded-xl">
+                <Star size={16} className="fill-gold text-gold" />
               </div>
               <h2 className="font-extrabold text-ink-text text-xs">Обране</h2>
             </div>
             {(favoriteRouteDetails.length > 0 || favoriteStopDetails.length > 0) && (
-              <Link to="/favorites" className="text-xs font-bold text-amber-600 hover:text-amber-700 flex items-center gap-0.5">
+              <Link to="/favorites" className="text-xs font-bold text-gold hover:brightness-110 flex items-center gap-0.5">
                 <span>Усі ({favoriteRouteDetails.length + favoriteStopDetails.length})</span>
                 <ChevronRight size={14} />
               </Link>
@@ -578,7 +618,7 @@ export function HomePage() {
               <p className="text-[11px] text-ink-muted mb-3 max-w-[220px]">Закріплюйте маршрути та зупинки для швидкого доступу</p>
               <Link 
                 to="/routes"
-                className="px-4 py-2.5 bg-primary text-white rounded-xl text-xs font-bold shadow-sm hover:bg-primary active:scale-95 transition-all inline-flex items-center gap-1.5"
+                className="px-4 py-2.5 bg-primary text-white rounded-xl text-xs font-bold shadow-sm hover:brightness-105 active:scale-95 transition-all inline-flex items-center gap-1.5"
               >
                 <Plus size={14} />
                 <span>Додати маршрути</span>
@@ -657,15 +697,15 @@ export function HomePage() {
         {/* 8. TRANSPORT NEWS & ANNOUNCEMENTS */}
         <section className="bg-surface-raised rounded-[22px] p-4 border border-border/40 shadow-sm">
           <div className="flex items-center gap-2 mb-3">
-            <div className="p-1.5 bg-blue-50 text-blue-600 rounded-xl">
+            <div className="p-1.5 bg-surface-soft text-ink-muted rounded-xl">
               <AlertCircle size={16} />
             </div>
             <h2 className="font-extrabold text-ink-text text-xs">Новини транспорту</h2>
           </div>
 
-          <div className="p-3.5 bg-gradient-to-br from-blue-50/50 to-indigo-50/50 rounded-[18px] border border-blue-100/60 space-y-2">
+          <div className="p-3.5 bg-surface-soft rounded-[18px] border border-border/40 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-100 text-blue-700">Офіційно</span>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-surface-raised text-ink-text">Офіційно</span>
               <span className="text-[10px] font-semibold text-ink-muted">Сьогодні, 08:00</span>
             </div>
             <h3 className="font-extrabold text-ink-text text-xs">Зміни в розкладі рухів тролейбусів у місті</h3>
@@ -675,7 +715,7 @@ export function HomePage() {
             <div className="pt-1">
               <button 
                 onClick={() => showToast('Детальна інформація доступна в офіційному Telegram каналі Kharkiv GO.')}
-                className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700"
+                className="inline-flex items-center gap-1 text-xs font-bold text-blue-500 hover:brightness-110"
               >
                 <span>Детальніше</span>
                 <ExternalLink size={13} />
@@ -687,7 +727,7 @@ export function HomePage() {
         {/* 9. REPORT DELAY CTA */}
         <button
           onClick={() => setIsReportDelayOpen(true)}
-          className="flex w-full items-center justify-center gap-2 rounded-[22px] border border-amber-200 bg-amber-50 py-3.5 text-xs font-extrabold text-amber-700 shadow-sm transition-all active:scale-[0.98] hover:bg-amber-100"
+          className="flex w-full items-center justify-center gap-2 rounded-[22px] border border-gold/25 bg-gold/10 py-3.5 text-xs font-extrabold text-gold shadow-sm transition-all active:scale-[0.98] hover:bg-gold/15"
         >
           <AlertTriangle size={16} />
           <span>Повідомити про затримку</span>

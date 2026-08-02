@@ -1,9 +1,13 @@
-import { Clock, Timer, MapPin } from 'lucide-react';
+import { Clock, Timer, MapPin, Map as MapIcon } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { localStops } from '@/data/localData';
 import { TransportKindIcon, KIND_LABELS_UK } from '@/components/TransportKindIcon';
 import { getStationPhoto } from '@/data/stationPhotos';
 import { trolleyTimetables } from '@/data/trolleyTimetables';
+import { tramTimetables } from '@/data/tramTimetables';
+import { busTimetables } from '@/data/busTimetables';
 import { RouteTimetable } from '@/components/RouteTimetable';
+import { RouteAlertBanner } from '@/components/RouteAlertBanner';
 import type { TransportRoute } from '@/types/transport';
 
 /**
@@ -14,14 +18,34 @@ import type { TransportRoute } from '@/types/transport';
  * в модальному вікні <RouteDetailModal /> — одним тапом по картці, без
  * переходу на весь застосунок.
  */
-export function RouteDetailContent({ route }: { route: TransportRoute }) {
+export function RouteDetailContent({ route, onNavigate }: { route: TransportRoute; onNavigate?: () => void }) {
   const routeColor = route.color || '#10b981';
-  const timetable = route.kind === 'trolleybus' ? trolleyTimetables.getByRouteNumber(route.number) : null;
-  const timetableInfo = route.kind === 'trolleybus' ? trolleyTimetables.getInfoByRouteNumber(route.number) : undefined;
+  const navigate = useNavigate();
+
+  // Клік на "Показати на карті" (для будь-якого виду — автобус, тролейбус,
+  // трамвай, метро) веде на /map?route=<id>: карта одразу підсвічує лінію
+  // маршруту, підганяє камеру під його межі (fitBounds) і підсвічує його
+  // зупинки. Раніше такої кнопки не існувало — маршрут можна було побачити
+  // на карті лише випадково натиснувши точно на тонку лінію.
+  const handleShowOnMap = () => {
+    onNavigate?.();
+    navigate(`/map?route=${route.id}`);
+  };
+
+  const handleStopOnMap = (stopId: string) => {
+    onNavigate?.();
+    navigate(`/map?route=${route.id}&stop=${stopId}`);
+  };
+  const timetableSource =
+    route.kind === 'trolleybus' ? trolleyTimetables : route.kind === 'tram' ? tramTimetables : route.kind === 'bus' ? busTimetables : null;
+  const timetable = timetableSource?.getByRouteNumber(route.number) ?? null;
+  const timetableInfo = timetableSource?.getInfoByRouteNumber(route.number);
   const hasTimetable = !!timetable && timetable.stations.length > 0;
 
   return (
     <div className="space-y-5">
+      <RouteAlertBanner routeNumber={route.number} kind={route.kind} />
+
       {/* Main Hero Card */}
       <div className="relative overflow-hidden rounded-3xl border border-border/60 bg-surface/60 p-4 backdrop-blur-xl shadow-sm">
         <div
@@ -74,10 +98,20 @@ export function RouteDetailContent({ route }: { route: TransportRoute }) {
           )}
 
           <div className="inline-flex items-center gap-1.5 rounded-xl border border-border/40 bg-surface/50 px-3 py-1.5 font-semibold text-ink-text backdrop-blur-md">
-            <MapPin className="h-3.5 w-3.5 text-emerald-500" />
+            <MapPin className="h-3.5 w-3.5 text-ink-muted" />
             <span>{route.stopIds.length} зупинок</span>
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={handleShowOnMap}
+          className="mt-3.5 flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-bold text-white shadow-md transition-all active:scale-[0.98]"
+          style={{ backgroundColor: routeColor }}
+        >
+          <MapIcon className="h-4 w-4" />
+          Показати на карті
+        </button>
       </div>
 
       {/* Route Stops Interactive Timeline */}
@@ -104,7 +138,16 @@ export function RouteDetailContent({ route }: { route: TransportRoute }) {
               return (
                 <li
                   key={`${stopId}-${idx}`}
-                  className="relative flex items-center gap-3 rounded-2xl p-2 transition-colors hover:bg-surface/80"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleStopOnMap(stopId)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleStopOnMap(stopId);
+                    }
+                  }}
+                  className="relative flex cursor-pointer items-center gap-3 rounded-2xl p-2 transition-colors hover:bg-surface/80 active:scale-[0.99]"
                 >
                   <div className="relative z-10 flex h-5 w-5 shrink-0 items-center justify-center">
                     <div
@@ -138,8 +181,8 @@ export function RouteDetailContent({ route }: { route: TransportRoute }) {
                       <span
                         className={`inline-block mt-0.5 text-[10px] font-bold tracking-wider uppercase px-1.5 py-0.2 rounded-md border ${
                           isFirst
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                            : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                            ? 'bg-surface-soft text-ink-text border-border/40'
+                            : 'bg-surface-soft text-ink-muted border-border/40'
                         }`}
                       >
                         {isFirst ? 'Початкова' : 'Кінцева'}

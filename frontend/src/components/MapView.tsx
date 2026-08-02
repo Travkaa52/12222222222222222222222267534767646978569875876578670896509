@@ -5,23 +5,32 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 
 import { DEFAULT_ZOOM, KHARKIV_CENTER, MAP_STYLES, MAX_ZOOM, MIN_ZOOM, TRANSPORT_COLORS } from '@/config/map';
 import { useSettingsStore } from '@/store/useSettingsStore';
-import { buildRouteLinesGeoJson, buildStopsGeoJson } from '@/lib/mapLayers';
+import { buildRouteLinesGeoJson, buildStopsGeoJson, buildTripPathGeoJson } from '@/lib/mapLayers';
 import { assetUrl } from '@/lib/assetUrl';
 import { localRoutes } from '@/data/localData';
+import type { TripPlan } from '@/data/localData';
 import type { TransportKind } from '@/types/transport';
+
+const TRIP_PATH_SOURCE_ID = 'khgo-trip-path';
+const TRIP_PATH_CASING_LAYER_ID = 'khgo-trip-path-casing';
+const TRIP_PATH_LAYER_ID = 'khgo-trip-path-line';
+const TRIP_PATH_WALK_LAYER_ID = 'khgo-trip-path-walk';
 
 const ROUTES_SOURCE_ID = 'khgo-routes';
 const ROUTES_LAYER_ID = 'khgo-routes-lines';
 const ROUTES_CASING_LAYER_ID = 'khgo-routes-casing';
+const ROUTES_HITBOX_LAYER_ID = 'khgo-routes-hitbox';
 const STOPS_SOURCE_ID = 'khgo-stops';
 const STOPS_LAYER_ID = 'khgo-stops-circles';
 const STOPS_HALO_LAYER_ID = 'khgo-stops-halo';
 const STOP_HIGHLIGHT_LAYER_ID = 'khgo-stops-highlight';
-// Метро — окремі шари без minzoom-обмеження: станції метро мають лишатись
+// Метро — окремий шар без minzoom-обмеження: станції метро мають лишатись
 // видимими на будь-якому масштабі карти, на відміну від трамвайних/тролейбусних/
 // автобусних зупинок, яких на віддаленому зумі забагато й вони заховані навмисно.
-const METRO_STOPS_HALO_LAYER_ID = 'khgo-stops-metro-halo';
-const METRO_STOPS_LAYER_ID = 'khgo-stops-metro-circles';
+// Рендериться значком метрополітену (public/icons/kharkiv-metro-logo.png) з
+// назвою станції збоку, а не звичайним кольоровим кружечком.
+const METRO_STOPS_LAYER_ID = 'khgo-stops-metro-icons';
+const METRO_ICON_IMAGE_ID = 'khgo-metro-station-icon';
 
 const STOP_COLOR_MATCH: maplibregl.ExpressionSpecification = [
   'match',
@@ -73,6 +82,72 @@ function addStaticTransitLayers(
           ['interpolate', ['linear'], ['zoom'], 11, 1.4, 17, 3.5]
         ],
         'line-opacity': ['case', ['get', 'dimmed'], 0.12, 0.9]
+      }
+    });
+
+    // Невидимий, але значно ширший шар-"мішень" під видимою лінією маршруту.
+    // Раніше клікабельним був лише сам ROUTES_LAYER_ID шириною 1.4–6.5px —
+    // на телефоні потрапити пальцем у тонку лінію тролейбуса/трамвая було
+    // практично неможливо, тому побудова маршруту на карті "не працювала".
+    // Цей шар нічого не малює (line-opacity: 0), лише розширює ділянку кліку.
+    map.addLayer({
+      id: ROUTES_HITBOX_LAYER_ID,
+      type: 'line',
+      source: ROUTES_SOURCE_ID,
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': '#000000',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 18, 17, 26],
+        'line-opacity': 0
+      }
+    }, ROUTES_LAYER_ID);
+  }
+
+  // Шар намальованого шляху обраного варіанту поїздки (Звідки -> Куди):
+  // пунктирна пішохідна ділянка + суцільна лінія кольору виду транспорту
+  // для кожного legу (з пересадкою — кілька кольорових відрізків підряд).
+  if (!map.getSource(TRIP_PATH_SOURCE_ID)) {
+    map.addSource(TRIP_PATH_SOURCE_ID, {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+      id: TRIP_PATH_WALK_LAYER_ID,
+      type: 'line',
+      source: TRIP_PATH_SOURCE_ID,
+      filter: ['==', ['get', 'kind'], 'walk'],
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': '#9AA3AE',
+        'line-width': 3,
+        'line-dasharray': [0.001, 1.6]
+      }
+    });
+
+    map.addLayer({
+      id: TRIP_PATH_CASING_LAYER_ID,
+      type: 'line',
+      source: TRIP_PATH_SOURCE_ID,
+      filter: ['==', ['get', 'kind'], 'transit'],
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': '#0A0F0D',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 7, 17, 12],
+        'line-opacity': 0.5
+      }
+    });
+
+    map.addLayer({
+      id: TRIP_PATH_LAYER_ID,
+      type: 'line',
+      source: TRIP_PATH_SOURCE_ID,
+      filter: ['==', ['get', 'kind'], 'transit'],
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': ['coalesce', ['get', 'color'], '#05522E'],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 4.5, 17, 9],
+        'line-opacity': 1
       }
     });
   }
@@ -138,33 +213,69 @@ function addStaticTransitLayers(
     });
 
     // Метро — без minzoom, завжди видимі, поки showStops увімкнено.
-    map.addLayer({
-      id: METRO_STOPS_HALO_LAYER_ID,
-      type: 'circle',
-      source: STOPS_SOURCE_ID,
-      filter: ['==', ['get', 'dominantKind'], 'metro'],
-      layout: { visibility: showStops ? 'visible' : 'none' },
-      paint: {
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 4.5, 17, 11],
-        'circle-color': '#FFFFFF',
-        'circle-opacity': 0.95
-      }
-    });
+    // Значок станції (лого метрополітену) + назва станції збоку.
+    addMetroIconLayer(map, showStops);
+  }
+}
 
+/**
+ * Додає значок станції метро (public/icons/kharkiv-metro-logo.png) як
+ * MapLibre-зображення та символьний шар поверх нього з назвою станції
+ * збоку. Зображення потрібно вантажити асинхронно й наново після кожної
+ * зміни стилю карти (map.setStyle скидає всі раніше додані зображення),
+ * тому виклик безпечний для повторного виконання.
+ */
+function addMetroIconLayer(map: MapLibreMap, showStops: boolean) {
+  const buildLayer = () => {
+    if (map.getLayer(METRO_STOPS_LAYER_ID) || !map.getSource(STOPS_SOURCE_ID)) return;
     map.addLayer({
       id: METRO_STOPS_LAYER_ID,
-      type: 'circle',
+      type: 'symbol',
       source: STOPS_SOURCE_ID,
       filter: ['==', ['get', 'dominantKind'], 'metro'],
-      layout: { visibility: showStops ? 'visible' : 'none' },
+      layout: {
+        visibility: showStops ? 'visible' : 'none',
+        'icon-image': map.hasImage(METRO_ICON_IMAGE_ID) ? METRO_ICON_IMAGE_ID : '',
+        'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 0.32, 17, 0.6],
+        'icon-anchor': 'center',
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+        'text-field': ['get', 'name'],
+        'text-size': 11,
+        'text-anchor': 'left',
+        'text-offset': [1.15, 0],
+        'text-allow-overlap': false,
+        'text-ignore-placement': false,
+        'text-optional': true
+      },
       paint: {
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 3.5, 17, 8],
-        'circle-color': TRANSPORT_COLORS.metro,
-        'circle-stroke-color': '#FFFFFF',
-        'circle-stroke-width': 2
+        'text-color': TRANSPORT_COLORS.metro,
+        'text-halo-color': '#FFFFFF',
+        'text-halo-width': 1.4
       }
     });
+  };
+
+  if (map.hasImage(METRO_ICON_IMAGE_ID)) {
+    buildLayer();
+    return;
   }
+
+  map
+    .loadImage(assetUrl('icons/kharkiv-metro-logo.png'))
+    .then((result) => {
+      if (result?.data && !map.hasImage(METRO_ICON_IMAGE_ID)) {
+        map.addImage(METRO_ICON_IMAGE_ID, result.data);
+      }
+    })
+    .catch(() => {
+      // Якщо картинку не вдалось завантажити, шар все одно додаємо —
+      // тоді станції метро лишаться підписаними назвою (без іконки), а не
+      // зникнуть з карти повністю.
+    })
+    .finally(() => {
+      buildLayer();
+    });
 }
 
 function updateRouteStopHighlight(map: MapLibreMap, selectedRouteId?: string | null) {
@@ -205,7 +316,7 @@ function updateStaticTransitLayers(
 
   updateRouteStopHighlight(map, selectedRouteId);
 
-  for (const layerId of [STOPS_LAYER_ID, STOPS_HALO_LAYER_ID, METRO_STOPS_LAYER_ID, METRO_STOPS_HALO_LAYER_ID]) {
+  for (const layerId of [STOPS_LAYER_ID, STOPS_HALO_LAYER_ID, METRO_STOPS_LAYER_ID]) {
     if (map.getLayer(layerId)) {
       map.setLayoutProperty(layerId, 'visibility', showStops ? 'visible' : 'none');
     }
@@ -228,6 +339,8 @@ interface MapViewProps {
   fromPoint?: { lat: number; lng: number } | null;
   /** Точка "Куди" для побудови маршруту — позначається червоним піном. */
   toPoint?: { lat: number; lng: number } | null;
+  /** Обраний варіант поїздки — малюється кольоровим шляхом по видах транспорту. */
+  tripPlan?: TripPlan | null;
 }
 
 export function MapView({
@@ -242,7 +355,8 @@ export function MapView({
   onMapReady,
   onMapError,
   fromPoint = null,
-  toPoint = null
+  toPoint = null,
+  tripPlan = null
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -306,12 +420,12 @@ export function MapView({
         if (stopId) onStopSelectRef.current?.(stopId);
       });
 
-      map.on('click', ROUTES_LAYER_ID, (e) => {
+      map.on('click', ROUTES_HITBOX_LAYER_ID, (e) => {
         const routeId = e.features?.[0]?.properties?.routeId as string | undefined;
         if (routeId) onRouteSelectRef.current?.(routeId);
       });
 
-      for (const layerId of [STOPS_LAYER_ID, METRO_STOPS_LAYER_ID, ROUTES_LAYER_ID]) {
+      for (const layerId of [STOPS_LAYER_ID, METRO_STOPS_LAYER_ID, ROUTES_HITBOX_LAYER_ID]) {
         map.on('mouseenter', layerId, () => {
           map.getCanvas().style.cursor = 'pointer';
         });
@@ -342,6 +456,10 @@ export function MapView({
     map.once('styledata', () => {
       ensureBuildingsLayer(map, show3DBuildings);
       addStaticTransitLayers(map, visibleKinds, showStops, selectedRouteId);
+      const tripSource = map.getSource(TRIP_PATH_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+      tripSource?.setData(
+        tripPlan ? buildTripPathGeoJson(tripPlan, fromPoint, toPoint) : { type: 'FeatureCollection', features: [] }
+      );
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapStyle]);
@@ -419,6 +537,17 @@ export function MapView({
       rotor.style.transform = typeof userHeading === 'number' ? `rotate(${userHeading}deg)` : 'rotate(0deg)';
     }
   }, [userIsMoving, userHeading]);
+
+  // Малювання шляху обраного варіанту поїздки кольором транспорту
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const source = map.getSource(TRIP_PATH_SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+    if (!source) return;
+    source.setData(
+      tripPlan ? buildTripPathGeoJson(tripPlan, fromPoint, toPoint) : { type: 'FeatureCollection', features: [] }
+    );
+  }, [tripPlan, fromPoint, toPoint, mapReady]);
 
   // Маркери "Звідки" / "Куди" для побудови маршруту
   useEffect(() => {

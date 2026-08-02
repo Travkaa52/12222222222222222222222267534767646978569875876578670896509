@@ -2,9 +2,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import { 
-  Clock, 
   X, 
-  ChevronRight, 
   Mic, 
   Plus, 
   Minus, 
@@ -19,17 +17,19 @@ import {
   LocateFixed
 } from 'lucide-react';
 import { MapView } from '@/components/MapView';
-import { StopCard } from '@/components/StopCard';
+import { StopDetailModal } from '@/components/StopDetailModal';
+import { TripPlanSheet } from '@/components/TripPlanSheet';
 import { RouteSheet } from '@/components/RouteSheet';
+import { Sheet } from '@/components/ui/Sheet';
 import { MapSearchSuggestions } from '@/components/MapSearchSuggestions';
 import { GpsButton } from '@/components/GpsButton';
 import { MapModeButton } from '@/components/MapModeButton';
 import { TransportLayersPanel } from '@/components/TransportLayersPanel';
 import { useGeolocation } from '@/hooks/useGeolocation';
-import { localRoutes, localStops, type TripOption, type StopItem } from '@/data/localData';
+import { localRoutes, localStops, type TripPlan, type StopItem } from '@/data/localData';
 import { getRouteBounds } from '@/lib/mapLayers';
+import { refineTripPlansWithOSM } from '@/lib/tripPlanRefine';
 import { useSettingsStore } from '@/store/useSettingsStore';
-import { KIND_LABELS_UK } from '@/components/TransportKindIcon';
 import type { TransportKind } from '@/types/transport';
 
 const SUGGESTIONS_LIMIT = 6;
@@ -53,10 +53,6 @@ export function MapPage() {
   const toggleStopsOnMap = useSettingsStore((s) => s.toggleStopsOnMap);
 
   const [map, setMap] = useState<MapLibreMap | null>(null);
-  const [isMapLoaded, setIsMapLoaded] = useState(false);
-  const [mapError, setMapError] = useState<string | null>(null);
-  const [mapKey, setMapKey] = useState(0);
-  const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const [selectedStopId, setSelectedStopId] = useState<string | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
@@ -67,7 +63,10 @@ export function MapPage() {
   const [fromPoint, setFromPoint] = useState<{ lat: number; lng: number } | null>(null);
   const [toPoint, setToPoint] = useState<{ lat: number; lng: number } | null>(null);
   const [activeField, setActiveField] = useState<'from' | 'to' | null>(null);
-  const [tripOptions, setTripOptions] = useState<TripOption[] | null>(null);
+  const [tripPlans, setTripPlans] = useState<TripPlan[] | null>(null);
+  const [isRefiningTrip, setIsRefiningTrip] = useState(false);
+  const refineRequestIdRef = useRef(0);
+  const [selectedPlanIndex, setSelectedPlanIndex] = useState<number | null>(null);
   const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const [activeFilterChips, setActiveFilterChips] = useState<Record<string, boolean>>(() => {
@@ -178,7 +177,8 @@ export function MapPage() {
       setSearchParams({ q: stop.name });
     }
     setActiveField(null);
-    setTripOptions(null);
+    setTripPlans(null);
+    setSelectedPlanIndex(null);
     clearSelection();
   }, [clearSelection, setSearchParams]);
 
@@ -188,7 +188,8 @@ export function MapPage() {
     if (position) {
       setFromPoint({ lat: position.lat, lng: position.lng });
       setFromQuery('Моє місцезнаходження');
-      setTripOptions(null);
+      setTripPlans(null);
+    setSelectedPlanIndex(null);
     } else {
       setPendingUseLocation(true);
       locate();
@@ -208,14 +209,16 @@ export function MapPage() {
     setToPoint(fromPoint);
     setFromQuery(toQuery);
     setToQuery(fromQuery);
-    setTripOptions(null);
+    setTripPlans(null);
+    setSelectedPlanIndex(null);
   }, [fromPoint, toPoint, fromQuery, toQuery]);
 
   const handleBuildTrip = useCallback(() => {
     if (!fromPoint || !toPoint) return;
     clearSelection();
-    const options = localRoutes.buildTrip(fromPoint.lat, fromPoint.lng, toPoint.lat, toPoint.lng);
-    setTripOptions(options);
+    const plans = localRoutes.buildTripPlans(fromPoint.lat, fromPoint.lng, toPoint.lat, toPoint.lng);
+    setTripPlans(plans);
+    setSelectedPlanIndex(plans.length > 0 ? 0 : null);
 
     if (map) {
       map.fitBounds(
@@ -226,11 +229,84 @@ export function MapPage() {
         { padding: { top: 160, bottom: 320, left: 60, right: 60 }, duration: 700, maxZoom: 15 }
       );
     }
+
+    // Перший показ — миттєвий (побудований по прямій відстані). Одразу
+    // після цього запускаємо другий, уточнюючий прохід через OpenStreetMap
+    // (реальна пішохідна мережа вулиць), який тихо підправляє цифри ходьби
+    // і, за потреби, переставляє варіанти місцями — без блокування UI.
+    if (plans.length > 0) {
+      const requestId = ++refineRequestIdRef.current;
+      setIsRefiningTrip(true);
+      refineTripPlansWithOSM(plans, fromPoint, toPoint)
+        .then((refined) => {
+          // Ігноруємо застарілу відповідь, якщо користувач встиг побудувати
+          // ще один маршрут, поки цей запит ще виконувався.
+          if (refineRequestIdRef.current !== requestId) return;
+          setTripPlans(refined);
+          setSelectedPlanIndex(refined.length > 0 ? 0 : null);
+        })
+        .finally(() => {
+          if (refineRequestIdRef.current === requestId) setIsRefiningTrip(false);
+        });
+    }
   }, [fromPoint, toPoint, map, clearSelection]);
 
-  const handleSelectTripOption = useCallback((option: TripOption) => {
-    handleRouteSelect(option.route.id);
-  }, [handleRouteSelect]);
+  const selectedTripPlan = useMemo(
+    () => (tripPlans && selectedPlanIndex !== null ? tripPlans[selectedPlanIndex] : null),
+    [tripPlans, selectedPlanIndex]
+  );
+
+  useEffect(() => {
+    if (tripPlans === null) {
+      refineRequestIdRef.current += 1;
+      setIsRefiningTrip(false);
+    }
+  }, [tripPlans]);
+
+  const handleSelectTripOption = useCallback((index: number) => {
+    setSelectedPlanIndex(index);
+    setSelectedStopId(null);
+    setSelectedRouteId(null);
+
+    const plan = tripPlans?.[index];
+    if (!plan || !map) return;
+
+    const coords: [number, number][] = [];
+    if (fromPoint) coords.push([fromPoint.lng, fromPoint.lat]);
+    plan.legs.forEach((leg) => {
+      coords.push([leg.boardStop.position.lng, leg.boardStop.position.lat]);
+      coords.push([leg.alightStop.position.lng, leg.alightStop.position.lat]);
+    });
+    if (toPoint) coords.push([toPoint.lng, toPoint.lat]);
+
+    if (coords.length >= 2) {
+      const lngs = coords.map((c) => c[0]);
+      const lats = coords.map((c) => c[1]);
+      map.fitBounds(
+        [
+          [Math.min(...lngs), Math.min(...lats)],
+          [Math.max(...lngs), Math.max(...lats)]
+        ],
+        { padding: { top: 160, bottom: 340, left: 60, right: 60 }, duration: 700, maxZoom: 16 }
+      );
+    }
+  }, [tripPlans, fromPoint, toPoint, map]);
+
+  const handleUseStopAsFrom = useCallback((stop: StopItem) => {
+    setFromPoint({ lat: stop.position.lat, lng: stop.position.lng });
+    setFromQuery(stop.name);
+    setTripPlans(null);
+    setSelectedPlanIndex(null);
+    clearSelection();
+  }, [clearSelection]);
+
+  const handleUseStopAsTo = useCallback((stop: StopItem) => {
+    setToPoint({ lat: stop.position.lat, lng: stop.position.lng });
+    setToQuery(stop.name);
+    setTripPlans(null);
+    setSelectedPlanIndex(null);
+    clearSelection();
+  }, [clearSelection]);
 
   const toggleChip = useCallback((id: string) => {
     setActiveFilterChips((prev) => {
@@ -277,85 +353,57 @@ export function MapPage() {
     if (initialQuery) setToQuery(initialQuery);
   }, [initialQuery]);
 
+  // Карта доступна одразу, без екрана завантаження — <MapView> рендериться
+  // і стає інтерактивною відразу після переходу на розділ "Карта", а не
+  // після події 'load' від MapLibre (стиль/тайли/зупинки доопрацьовуються
+  // самі, поки користувач вже може панорамувати й тапати по карті).
   const handleMapReady = useCallback((mapInstance: MapLibreMap | null) => {
     if (!mapInstance) return;
     setMap(mapInstance);
-    setMapError(null);
-    if (mapInstance.isStyleLoaded()) {
-      setIsMapLoaded(true);
-    } else {
-      mapInstance.on('load', () => setIsMapLoaded(true));
-    }
   }, []);
 
-  const handleMapError = useCallback((message: string) => {
-    // Помилка стилю карти (мережа/CORS/недоступний тайл-сервер) — раніше в цьому
-    // випадку спінер "Завантаження карти..." лишався назавжди і поверх нього
-    // висів непрозорий блокуючий шар, який не давав користуватись картою.
-    setMapError(message);
-  }, []);
-
-  const handleRetryMap = useCallback(() => {
-    setMapError(null);
-    setIsMapLoaded(false);
-    setMap(null);
-    // Перемонтовуємо <MapView> заново — інакше застряглий екземпляр MapLibre
-    // (наприклад, після обірваного запиту стилю) не зробить повторну спробу сам.
-    setMapKey((k) => k + 1);
-  }, []);
-
-  // Запобіжник: якщо подія 'load' від MapLibre з якоїсь причини не настає
-  // (повільна мережа, застряглий запит спрайту/шрифтів тощо), не тримаємо
-  // користувача вічно за блокуючим екраном завантаження — знімаємо його через
-  // 8 секунд і даємо картою користуватись; шари та зупинки доопрацюються самі,
-  // коли/якщо стиль усе ж довантажиться.
+  // Застосовуємо ?route=<id> / ?stop=<id> з URL — саме сюди веде кнопка
+  // "Показати на карті" в RouteDetailContent (розділ "Маршрути"). Раніше
+  // MapPage читав з URL лише параметр "q" — посилання /map?route=... не
+  // оброблялося зовсім, тож карта відкривалася порожньою, без підсвіченого
+  // маршруту. Чекаємо готову карту (для fitBounds/flyTo), один раз
+  // застосовуємо параметри й одразу прибираємо їх з адресного рядка, щоб
+  // повторний вибір маршруту вручну не "затирався" назад цим самим URL.
   useEffect(() => {
-    if (isMapLoaded || mapError) {
-      if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-      return;
+    if (!map) return;
+    const routeId = searchParams.get('route');
+    const stopId = searchParams.get('stop');
+    if (!routeId && !stopId) return;
+
+    if (routeId) {
+      const route = localRoutes.getById(routeId);
+      if (route) {
+        // Якщо фільтр цього виду транспорту вимкнено — лінія й маркери
+        // просто не намалюються на карті, навіть після fitBounds.
+        setActiveFilterChips((prev) => (prev[route.kind] ? prev : { ...prev, [route.kind]: true }));
+        if (stopId) {
+          // Клік по конкретній зупинці всередині маршруту — летимо саме до неї.
+          handleStopSelect(stopId);
+        } else {
+          handleRouteSelect(routeId);
+        }
+      }
+    } else if (stopId) {
+      handleStopSelect(stopId);
     }
-    loadTimeoutRef.current = setTimeout(() => {
-      setIsMapLoaded(true);
-    }, 8000);
-    return () => {
-      if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-    };
-  }, [isMapLoaded, mapError, mapKey]);
+
+    const next = new URLSearchParams(searchParams);
+    next.delete('route');
+    next.delete('stop');
+    setSearchParams(next, { replace: true });
+  }, [map, searchParams, setSearchParams, handleRouteSelect, handleStopSelect]);
 
   return (
     <div className="relative h-dvh w-full overflow-hidden bg-bg text-ink-text font-sans antialiased selection:bg-primary selection:text-white">
       
-      {/* 1. КАРТА ТА СКЕЛЕТОН */}
+      {/* 1. КАРТА — рендериться і стає доступною одразу, без екрана завантаження */}
       <div className="absolute inset-0 z-0">
-        {!isMapLoaded && !mapError && (
-          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center bg-bg/90 backdrop-blur-md animate-pulse">
-            <div className="flex flex-col items-center gap-3">
-              <div className="h-12 w-12 rounded-2xl bg-primary/20 border border-primary/40 flex items-center justify-center">
-                <span className="text-xl">🗺️</span>
-              </div>
-              <span className="text-xs font-bold tracking-wider uppercase text-ink-muted">Завантаження карти Харкова...</span>
-            </div>
-          </div>
-        )}
-
-        {mapError && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-bg/95 px-6 text-center backdrop-blur-md">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-rose-500/40 bg-rose-500/20">
-              <span className="text-xl">⚠️</span>
-            </div>
-            <p className="text-xs font-bold tracking-wide text-ink-muted">Не вдалося завантажити карту</p>
-            <p className="max-w-xs text-[11px] text-ink-muted">Перевірте з’єднання з інтернетом і спробуйте ще раз.</p>
-            <button
-              onClick={handleRetryMap}
-              className="mt-1 rounded-xl bg-primary px-4 py-2.5 text-xs font-bold text-white shadow-md transition-all hover:bg-primary active:scale-95"
-            >
-              Спробувати знову
-            </button>
-          </div>
-        )}
-
         <MapView
-          key={mapKey}
           userPosition={position}
           userHeading={heading}
           userIsMoving={isMoving}
@@ -365,9 +413,9 @@ export function MapPage() {
           visibleKinds={visibleKinds}
           showStops={showStops}
           onMapReady={handleMapReady}
-          onMapError={handleMapError}
           fromPoint={fromPoint}
           toPoint={toPoint}
+          tripPlan={selectedTripPlan}
         />
       </div>
 
@@ -391,7 +439,8 @@ export function MapPage() {
                   onChange={(e) => {
                     setFromQuery(e.target.value);
                     setFromPoint(null);
-                    setTripOptions(null);
+                    setTripPlans(null);
+    setSelectedPlanIndex(null);
                   }}
                   onFocus={() => {
                     clearTimeout(blurTimeoutRef.current);
@@ -432,7 +481,8 @@ export function MapPage() {
                   onChange={(e) => {
                     setToQuery(e.target.value);
                     setToPoint(null);
-                    setTripOptions(null);
+                    setTripPlans(null);
+    setSelectedPlanIndex(null);
                   }}
                   onFocus={() => {
                     clearTimeout(blurTimeoutRef.current);
@@ -449,7 +499,8 @@ export function MapPage() {
                     onClick={() => {
                       setToQuery('');
                       setToPoint(null);
-                      setTripOptions(null);
+                      setTripPlans(null);
+    setSelectedPlanIndex(null);
                     }}
                     aria-label="Очистити"
                     className="shrink-0 rounded-full p-1.5 text-ink-text/40 transition-colors hover:bg-surface-raised hover:text-ink-text"
@@ -506,7 +557,7 @@ export function MapPage() {
                 className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold transition-all shrink-0 backdrop-blur-xl shadow-md ${
                   isActive
                     ? 'bg-primary text-white shadow-primary/30 border border-primary/40'
-                    : 'bg-white/80 text-ink-text border border-white/40 hover:bg-white'
+                    : 'glass-surface text-ink-text hover:brightness-105'
                 }`}
               >
                 <Icon size={14} className={isActive ? 'text-white' : 'text-ink-muted'} />
@@ -517,7 +568,7 @@ export function MapPage() {
         </div>
 
         {activeField && fieldSuggestions.length > 0 && (
-          <div className="pointer-events-auto shadow-2xl rounded-[24px] overflow-hidden bg-white/95 backdrop-blur-2xl border border-white/50 animate-in fade-in zoom-in-95 duration-150">
+          <div className="pointer-events-auto shadow-2xl rounded-[24px] overflow-hidden glass-surface animate-in fade-in zoom-in-95 duration-150">
             <MapSearchSuggestions
               stops={fieldSuggestions}
               routes={[]}
@@ -536,52 +587,11 @@ export function MapPage() {
             <p className="font-body text-sm font-medium text-ink-muted">Зупинок не знайдено</p>
           </div>
         )}
-
-        {tripOptions !== null && (
-          <div className="pointer-events-auto max-h-[45vh] overflow-y-auto rounded-[24px] border border-white/50 bg-white/95 shadow-2xl backdrop-blur-2xl">
-            {tripOptions.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
-                <RouteIcon className="h-6 w-6 text-ink-muted" />
-                <p className="text-xs font-bold text-ink-text">Прямих маршрутів не знайдено</p>
-                <p className="text-[11px] text-ink-muted">Спробуйте обрати точки ближче до зупинок громадського транспорту</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-border/40 p-2">
-                <p className="px-2.5 pb-1.5 pt-1 text-[10px] font-black uppercase tracking-wider text-ink-muted">
-                  Варіанти маршруту ({tripOptions.length})
-                </p>
-                {tripOptions.map((option) => (
-                  <button
-                    key={option.route.id}
-                    onClick={() => handleSelectTripOption(option)}
-                    className="flex w-full items-center gap-3 rounded-2xl px-2.5 py-2.5 text-left transition-colors hover:bg-primary/10 active:scale-[0.99]"
-                  >
-                    <span
-                      className="flex h-9 w-11 shrink-0 items-center justify-center rounded-xl text-xs font-black text-white shadow-xs"
-                      style={{ backgroundColor: option.route.color }}
-                    >
-                      {option.route.number}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-bold text-ink-text">
-                        {KIND_LABELS_UK[option.route.kind]} · {option.route.headsignForward}
-                      </div>
-                      <div className="truncate text-[11px] text-ink-muted">
-                        Посадка: {option.boardStop.name} → Вихід: {option.alightStop.name}
-                      </div>
-                    </div>
-                    <ChevronRight size={14} className="shrink-0 text-ink-muted" />
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {/* 3. КНОПКИ КАРТИ */}
       <div className="absolute right-4 bottom-32 z-20 flex flex-col gap-2.5 will-change-transform">
-        <div className="flex flex-col rounded-[24px] bg-white/90 backdrop-blur-xl border border-white/40 shadow-xl shadow-black/10 overflow-hidden">
+        <div className="flex flex-col rounded-[24px] glass-surface shadow-xl shadow-black/10 overflow-hidden">
           <button
             onClick={() => map?.zoomIn({ duration: 300 })}
             className="flex h-[52px] w-[52px] items-center justify-center text-ink-text hover:bg-surface/60 active:bg-surface transition-colors border-b border-border/40"
@@ -600,7 +610,7 @@ export function MapPage() {
 
         <button
           onClick={() => map?.resetNorthPitch({ duration: 400 })}
-          className="flex h-[52px] w-[52px] items-center justify-center rounded-[24px] bg-white/90 backdrop-blur-xl border border-white/40 text-ink-text shadow-xl shadow-black/10 hover:bg-white active:scale-95 transition-all"
+          className="flex h-[52px] w-[52px] items-center justify-center rounded-[24px] glass-surface text-ink-text shadow-xl shadow-black/10 hover:brightness-105 active:scale-95 transition-all"
           aria-label="Компас / Північ"
           title="Скинути нахил"
         >
@@ -618,91 +628,45 @@ export function MapPage() {
 
       <TransportLayersPanel />
 
-      {/* 4. НИЖНЯ КАРТОЧКА: Маршрут */}
-      {selectedRoute && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] will-change-transform">
-          <div className="pointer-events-auto mx-auto max-w-md animate-in slide-in-from-bottom-6 duration-300">
-            <RouteSheet route={selectedRoute} onClose={clearSelection} onStopSelect={handleStopSelect} />
-          </div>
-        </div>
-      )}
+      {/* 4. НИЖНЯ ШТОРКА: Маршрут (обраний на карті/зупинці) — виїжджає знизу */}
+      <Sheet open={!!selectedRoute} onClose={clearSelection}>
+        {selectedRoute && <RouteSheet route={selectedRoute} onClose={clearSelection} onStopSelect={handleStopSelect} />}
+      </Sheet>
 
-      {/* 5. НИЖНЯ КАРТОЧКА: Зупинка */}
-      {selectedStop && !selectedRoute && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] will-change-transform">
-          <div className="pointer-events-auto mx-auto max-w-md space-y-3 animate-in slide-in-from-bottom-6 duration-300">
-            <div className="relative rounded-[24px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-2xl border border-white/50">
-              <StopCard stop={selectedStop} onClick={() => setSelectedStopId(null)} />
-              <button
-                onClick={() => setSelectedStopId(null)}
-                className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full bg-surface text-ink-muted hover:bg-surface transition-colors active:scale-90 shadow-xs"
-                aria-label="Закрити"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            {arrivals.length > 0 && (
-              <div className="overflow-hidden rounded-[24px] border border-white/50 bg-white/95 backdrop-blur-2xl p-4 shadow-2xl">
-                <div className="flex items-center justify-between pb-2 mb-2 border-b border-border/40 px-1">
-                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-ink-muted">
-                    <Clock className="h-4 w-4 text-primary" />
-                    <span>Прибуття транспорту</span>
-                  </div>
-                  <span className="flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] font-extrabold text-primary border border-primary/20">
-                    <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />
-                    LIVE
-                  </span>
-                </div>
-
-                <ul className="flex max-h-48 flex-col gap-1.5 overflow-y-auto no-scrollbar">
-                  {arrivals
-                    .sort((a, b) => a.etaMinutes - b.etaMinutes)
-                    .map((a) => {
-                      const route = localRoutes.getById(a.routeId);
-                      if (!route) return null;
-                      const isArrivingNow = a.etaMinutes === 0;
-
-                      return (
-                        <li key={a.routeId}>
-                          <button
-                            type="button"
-                            onClick={() => handleRouteSelect(a.routeId)}
-                            className="flex w-full items-center justify-between rounded-2xl border border-border/40 bg-surface-soft/80 px-3.5 py-2.5 text-xs transition-all hover:bg-primary/10 hover:border-primary/20 active:scale-[0.98]"
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              <span
-                                className="flex h-7 w-10 shrink-0 items-center justify-center rounded-xl font-bold text-white shadow-xs"
-                                style={{ backgroundColor: route.color || '#10b981' }}
-                              >
-                                {route.number}
-                              </span>
-                              <div className="flex flex-col text-left min-w-0">
-                                <span className="font-bold text-ink-text truncate">
-                                  {KIND_LABELS_UK[route.kind]}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className={`font-extrabold ${
-                                isArrivingNow ? 'text-primary animate-pulse' : 'text-primary'
-                              }`}>
-                                {isArrivingNow ? 'Прибуває' : `≈ ${a.etaMinutes} хв`}
-                              </span>
-                              <ChevronRight className="h-4 w-4 text-ink-muted" />
-                            </div>
-                          </button>
-                        </li>
-                      );
-                    })}
-                </ul>
+      {/* 4б. НИЖНЯ ШТОРКА: варіанти побудованої поїздки — теж виїжджає знизу */}
+      <Sheet
+        open={tripPlans !== null}
+        onClose={() => {
+          setTripPlans(null);
+          setSelectedPlanIndex(null);
+        }}
+        title="Варіанти поїздки"
+      >
+        {tripPlans !== null && (
+          <div className="-mx-5 -mt-2">
+            {isRefiningTrip && (
+              <div className="mx-5 mb-2 flex items-center gap-2 rounded-xl bg-primary/10 px-3 py-2 text-[11px] font-semibold text-primary">
+                <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+                <span>Уточнюємо пішохідні відстані по картах OpenStreetMap...</span>
               </div>
             )}
+            <div className="max-h-[50vh] overflow-y-auto">
+              <TripPlanSheet plans={tripPlans} selectedIndex={selectedPlanIndex} onSelect={handleSelectTripOption} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </Sheet>
 
+
+      {/* 5. МОДАЛКА ЗУПИНКИ */}
+      <StopDetailModal
+        stop={selectedStop ?? null}
+        arrivals={arrivals}
+        onClose={() => setSelectedStopId(null)}
+        onRouteSelect={handleRouteSelect}
+        onUseAsFrom={handleUseStopAsFrom}
+        onUseAsTo={handleUseStopAsTo}
+      />
     </div>
   );
 }

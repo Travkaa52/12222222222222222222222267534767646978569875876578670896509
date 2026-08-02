@@ -6,7 +6,7 @@ import {
   getActiveTrains,
   getUpcomingArrivalsForStation
 } from '@/liveMetro/liveMetroEngine';
-import { localStops } from '@/data/localData';
+import { METRO_STATION_GEO, haversineMeters } from '@/liveMetro/metroStationsGeo';
 import type { GeoPoint } from '@/types/transport';
 
 interface LiveMetroWidgetProps {
@@ -65,7 +65,10 @@ export function LiveMetroWidget({ userPosition }: LiveMetroWidgetProps) {
 
   const isServiceRunning = activeTrains.length > 0;
 
-  // Пошук найближчої станції метро
+  // Пошук найближчої станції метро — координати станцій беремо напряму з
+  // офіційного KML (src/assets/marshryt transporty kharkiv/…Google.kml),
+  // а не з узагальненого списку зупинок (там інша, менш точна, схема id
+  // для метро, і збіг з нею раніше не спрацьовував).
   const nearestMetroStation = useMemo(() => {
     if (!userPosition) return null;
 
@@ -73,21 +76,15 @@ export function LiveMetroWidget({ userPosition }: LiveMetroWidgetProps) {
 
     for (const { line } of BUILT_LINES) {
       for (const s of line.stations) {
-        const stop = localStops.getById(s.id);
-        if (!stop) continue;
+        const geo = METRO_STATION_GEO[s.id];
+        if (!geo) continue;
 
-        const dLat = ((stop.position.lat - userPosition.lat) * Math.PI) / 180;
-        const dLng = ((stop.position.lng - userPosition.lng) * Math.PI) / 180;
-        const lat1 = (userPosition.lat * Math.PI) / 180;
-        const lat2 = (stop.position.lat * Math.PI) / 180;
-        const h =
-          Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-        const distM = 2 * 6371000 * Math.asin(Math.min(1, Math.sqrt(h)));
+        const distM = haversineMeters(userPosition, geo);
 
         if (!best || distM < best.distM) {
           best = {
             id: s.id,
-            name: stop.name,
+            name: s.name,
             distM,
             lineId: line.id,
             lineColor: line.color
@@ -108,9 +105,12 @@ export function LiveMetroWidget({ userPosition }: LiveMetroWidgetProps) {
   const trackArrivals = useMemo(() => {
     if (upcomingArrivals.length === 0) return { dir0: null, dir1: null };
 
-    // Групуємо за напрямками direction 0 та direction 1
-    const dir0 = upcomingArrivals.find((a) => String(a.direction) === '0') ?? upcomingArrivals[0] ?? null;
-const dir1 = upcomingArrivals.find((a) => String(a.direction) === '1' && a !== dir0) ?? null;
+    // Групуємо за напрямками руху: 'forward' (Колія 1) та 'backward' (Колія 2).
+    // ВАЖЛИВО: liveMetroEngine.getUpcomingArrivalsForStation повертає
+    // direction як 'forward' | 'backward', а НЕ '0' | '1' — порівняння з
+    // рядками '0'/'1' завжди було хибним, тому Колія 2 ніколи не заповнювалась.
+    const dir0 = upcomingArrivals.find((a) => a.direction === 'forward') ?? upcomingArrivals[0] ?? null;
+    const dir1 = upcomingArrivals.find((a) => a.direction === 'backward' && a !== dir0) ?? null;
 
     return { dir0, dir1 };
   }, [upcomingArrivals]);
@@ -146,7 +146,7 @@ const dir1 = upcomingArrivals.find((a) => String(a.direction) === '1' && a !== d
         </div>
 
         <Link
-          to="/metro/live"
+          to={nearestMetroStation ? `/metro/live?station=${nearestMetroStation.id}&tab=timetable` : '/metro/live'}
           className="group flex items-center gap-1 text-[11px] font-semibold text-white/60 transition-colors hover:text-white"
         >
           <span>На схемі</span>
@@ -199,8 +199,11 @@ const dir1 = upcomingArrivals.find((a) => String(a.direction) === '1' && a !== d
             directionName={trackArrivals.dir0?.headsign ?? 'Напрямок А'}
           />
 
-          {/* Центральний платформений модуль станції */}
-          <div className="my-2.5 flex items-center justify-between rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 shadow-inner backdrop-blur-md">
+          {/* Центральний платформений модуль станції — веде до повного розкладу цієї станції */}
+          <Link
+            to={`/metro/live?station=${nearestMetroStation.id}&tab=timetable`}
+            className="my-2.5 flex items-center justify-between rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 shadow-inner backdrop-blur-md transition-colors hover:bg-white/15"
+          >
             <div className="flex items-center gap-2 truncate">
               <span
                 className="h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white/20"
@@ -210,10 +213,15 @@ const dir1 = upcomingArrivals.find((a) => String(a.direction) === '1' && a !== d
                 ст. {nearestMetroStation.name}
               </span>
             </div>
-            <span className="shrink-0 rounded-md bg-white/15 px-2 py-0.5 text-[10px] font-semibold text-white/80">
-              {formatDistance(nearestMetroStation.distM)}
+            <span className="flex shrink-0 items-center gap-1.5">
+              <span className="rounded-md bg-white/15 px-2 py-0.5 text-[10px] font-semibold text-white/80">
+                {formatDistance(nearestMetroStation.distM)}
+              </span>
+              <span className="rounded-md bg-neon/20 px-2 py-0.5 text-[10px] font-bold text-neon">
+                Розклад →
+              </span>
             </span>
-          </div>
+          </Link>
 
           {/* Індикатор колії 2 (Нижній напрямок) */}
           <TrackLine
@@ -229,7 +237,7 @@ const dir1 = upcomingArrivals.find((a) => String(a.direction) === '1' && a !== d
           <span className="flex items-center gap-1.5">
             <span>📍</span> Увімкніть геопозицію для відстеження
           </span>
-          <Link to="/metro/live" className="font-semibold text-neon hover:underline">
+          <Link to="/metro/live?tab=timetable" className="font-semibold text-neon hover:underline">
             Обрати станцію →
           </Link>
         </div>
