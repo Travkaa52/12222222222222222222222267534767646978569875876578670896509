@@ -1,6 +1,7 @@
 import { TransportKind } from '@/types/transport';
 import routesRealJson from './routesReal.json';
 import stopsRealJson from './stopsReal.json';
+import { metroStopsData, metroRoutesData, METRO_INTERCHANGES } from './metroStationsReal';
 
 /**
  * Реальні дані маршрутів і зупинок Харкова, розшифровані з офіційних
@@ -59,6 +60,10 @@ const REAL_STOPS = stopsRealJson as unknown as StopItem[];
 
 const stopsMap = new Map<string, StopItem>();
 REAL_STOPS.forEach((s) => stopsMap.set(s.id, s));
+// Станції метро (з KML, координати + українські назви) — окреме джерело,
+// без прив'язки до наземних маршрутів, але доступне для пошуку, вибору
+// на карті та як точка "Звідси"/"Куди" при побудові поїздки.
+metroStopsData.forEach((s) => stopsMap.set(s.id, s));
 
 // stopIds — зупинки в напрямку "туди" (headsignForward), як основний
 // список для карти, сторінки маршруту та підрахунку кількості зупинок.
@@ -78,6 +83,11 @@ const routesData: RouteItem[] = REAL_ROUTES.map((r) => ({
 }));
 
 const stopsData: StopItem[] = Array.from(stopsMap.values());
+
+// Лінії метро як звичайні "маршрути" для роутера поїздок — жодної окремої
+// гілки логіки для метро не потрібно: buildTripOptions/buildTripPlans
+// сприймають лінію метро так само, як маршрут автобуса/трамвая/тролейбуса.
+routesData.push(...(metroRoutesData as unknown as RouteItem[]));
 
 export interface TripOption {
   route: RouteItem;
@@ -158,6 +168,150 @@ export function buildTripOptions(
 }
 
 
+/** Знаходить найближчу до точки зупинку серед власних зупинок маршруту. */
+function nearestStopOnRoute(route: RouteItem, lat: number, lng: number): { stop: StopItem; dist: number } | null {
+  let best: { stop: StopItem; dist: number } | null = null;
+  for (const stopId of route.stopIds) {
+    const stop = stopsMap.get(stopId);
+    if (!stop) continue;
+    const dist = distanceMetersLatLng(lat, lng, stop.position.lat, stop.position.lng);
+    if (!best || dist < best.dist) best = { stop, dist };
+  }
+  return best;
+}
+
+/**
+ * Пересадочні вузли (наразі — три реальні пересадки харківського метро,
+ * `METRO_INTERCHANGES` з metroStationsReal.ts) як карта "звідси можна
+ * пішки перейти сюди", в обидва боки.
+ */
+const interchangeMap = new Map<string, string[]>();
+for (const [a, b] of METRO_INTERCHANGES) {
+  interchangeMap.set(a, [...(interchangeMap.get(a) ?? []), b]);
+  interchangeMap.set(b, [...(interchangeMap.get(b) ?? []), a]);
+}
+
+/**
+ * Повертає зупинку-кандидата на пересадку разом із самою зупинкою:
+ * саму зупинку (пересадка без ходьби між платформами) та, якщо є,
+ * пов'язані пересадочні станції поруч (підземний перехід метро) —
+ * з відстанню пішки між ними.
+ */
+function getTransferCandidates(stop: StopItem): { stop: StopItem; walkM: number }[] {
+  const result: { stop: StopItem; walkM: number }[] = [{ stop, walkM: 0 }];
+  const linkedIds = interchangeMap.get(stop.id) ?? [];
+  for (const id of linkedIds) {
+    const linked = stopsMap.get(id);
+    if (!linked) continue;
+    result.push({
+      stop: linked,
+      walkM: distanceMetersLatLng(stop.position.lat, stop.position.lng, linked.position.lat, linked.position.lng)
+    });
+  }
+  return result;
+}
+
+export interface TripLeg {
+  route: RouteItem;
+  boardStop: StopItem;
+  alightStop: StopItem;
+  /** Пішки від виходу з попередньої ділянки до посадки на цю (перехід між
+   *  двома різними, але пов'язаними пересадочними станціями, напр. метро). */
+  transferWalkFromM?: number;
+}
+
+export interface TripPlan {
+  /** Одна ділянка — пряма поїздка; дві — з однією пересадкою. */
+  legs: TripLeg[];
+  /** Пішки від точки "Звідки" до першої зупинки посадки. */
+  boardWalkM: number;
+  /** Пішки від останньої зупинки виходу до точки "Куди". */
+  alightWalkM: number;
+  transfersCount: number;
+}
+
+/**
+ * Будує варіанти поїздки громадським транспортом між двома точками,
+ * включно з варіантами з ОДНІЄЮ пересадкою, якщо прямого маршруту немає
+ * (або їх замало). Пересадка шукається через зупинки-хаби: зупинку, яку
+ * обслуговує і перший, і другий маршрут (`StopItem.routeIds`).
+ */
+export function buildTripPlans(
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+  maxOptions = 6
+): TripPlan[] {
+  const direct = buildTripOptions(fromLat, fromLng, toLat, toLng, maxOptions).map(
+    (o): TripPlan => ({
+      legs: [{ route: o.route, boardStop: o.boardStop, alightStop: o.alightStop }],
+      boardWalkM: o.boardDistanceM,
+      alightWalkM: o.alightDistanceM,
+      transfersCount: 0
+    })
+  );
+
+  if (direct.length >= maxOptions) return direct.slice(0, maxOptions);
+
+  const RADII_M = [700, 1200, 2200];
+  let transferPlans: TripPlan[] = [];
+
+  for (const radius of RADII_M) {
+    const candidates: TripPlan[] = [];
+    const seenPairs = new Set<string>();
+
+    for (const route1 of routesData) {
+      const board = nearestStopOnRoute(route1, fromLat, fromLng);
+      if (!board || board.dist > radius) continue;
+
+      for (const stopId of route1.stopIds) {
+        if (stopId === board.stop.id) continue;
+        const transferStop = stopsMap.get(stopId);
+        if (!transferStop) continue;
+
+        // Пересадка можлива або на цій самій зупинці (routeId2 в її
+        // routeIds), або на пов'язаній пересадочній станції поруч
+        // (напр. метро: Майдан Конституції ↔ Історичний музей).
+        for (const candidate of getTransferCandidates(transferStop)) {
+          for (const routeId2 of candidate.stop.routeIds) {
+            if (routeId2 === route1.id) continue;
+            const route2 = routesData.find((r) => r.id === routeId2);
+            if (!route2) continue;
+
+            const alight = nearestStopOnRoute(route2, toLat, toLng);
+            if (!alight || alight.dist > radius) continue;
+            if (alight.stop.id === candidate.stop.id) continue;
+
+            const pairKey = `${route1.id}|${transferStop.id}|${candidate.stop.id}|${route2.id}`;
+            if (seenPairs.has(pairKey)) continue;
+            seenPairs.add(pairKey);
+
+            candidates.push({
+              legs: [
+                { route: route1, boardStop: board.stop, alightStop: transferStop },
+                { route: route2, boardStop: candidate.stop, alightStop: alight.stop, transferWalkFromM: candidate.walkM }
+              ],
+              boardWalkM: board.dist,
+              alightWalkM: alight.dist,
+              transfersCount: 1
+            });
+          }
+        }
+      }
+    }
+
+    if (candidates.length > 0) {
+      transferPlans = candidates
+        .sort((a, b) => a.boardWalkM + a.alightWalkM - (b.boardWalkM + b.alightWalkM))
+        .slice(0, maxOptions);
+      break;
+    }
+  }
+
+  return [...direct, ...transferPlans].slice(0, maxOptions);
+}
+
 export const localRoutes = {
   all: (): RouteItem[] => routesData,
   getById: (id: string): RouteItem | undefined => routesData.find((r) => r.id === id),
@@ -169,7 +323,9 @@ export const localRoutes = {
     );
   },
   buildTrip: (fromLat: number, fromLng: number, toLat: number, toLng: number): TripOption[] =>
-    buildTripOptions(fromLat, fromLng, toLat, toLng)
+    buildTripOptions(fromLat, fromLng, toLat, toLng),
+  buildTripPlans: (fromLat: number, fromLng: number, toLat: number, toLng: number): TripPlan[] =>
+    buildTripPlans(fromLat, fromLng, toLat, toLng)
 };
 
 export const localStops = {
