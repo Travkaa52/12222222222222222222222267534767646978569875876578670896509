@@ -26,6 +26,7 @@ export default {
         },
         border: 'rgb(var(--color-border))',
         ink: {
+          DEFAULT: 'rgb(var(--color-ink) / <alpha-value>)',
           text: 'rgb(var(--color-text) / <alpha-value>)',
           muted: 'rgb(var(--color-text-muted))',
           inverted: 'rgb(var(--color-text-inverted) / <alpha-value>)',
